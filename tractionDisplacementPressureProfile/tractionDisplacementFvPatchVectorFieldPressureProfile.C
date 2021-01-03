@@ -1,0 +1,227 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     |
+    \\  /    A nd           | www.openfoam.com
+     \\/     M anipulation  |
+-------------------------------------------------------------------------------
+    Released 2004-2011 OpenCFD Ltd.
+    Copyright (C) 2011-2016 OpenFOAM Foundation
+-------------------------------------------------------------------------------
+License
+    This file is part of OpenFOAM.
+
+    OpenFOAM is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    OpenFOAM is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+    for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with OpenFOAM.  If not, see <http://www.gnu.org/licenses/>.
+
+\*---------------------------------------------------------------------------*/
+
+#include "tractionDisplacementFvPatchVectorFieldPressureProfile.H"
+#include "addToRunTimeSelectionTable.H"
+#include "volFields.H"
+#include "Function1.H"
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+namespace Foam
+{
+
+// * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
+
+tractionDisplacementFvPatchVectorFieldPressureProfile::
+tractionDisplacementFvPatchVectorFieldPressureProfile
+(
+    const fvPatch& p,
+    const DimensionedField<vector, volMesh>& iF
+)
+:
+    fixedGradientFvPatchVectorField(p, iF),
+    traction_(p.size(), Zero),
+    pressure_(p.size(), Zero)
+{
+    fvPatchVectorField::operator=(patchInternalField());
+    gradient() = Zero;
+}
+
+
+tractionDisplacementFvPatchVectorFieldPressureProfile::
+tractionDisplacementFvPatchVectorFieldPressureProfile
+(
+    const tractionDisplacementFvPatchVectorFieldPressureProfile& tdpvf,
+    const fvPatch& p,
+    const DimensionedField<vector, volMesh>& iF,
+    const fvPatchFieldMapper& mapper
+)
+:
+    fixedGradientFvPatchVectorField(tdpvf, p, iF, mapper),
+    traction_(tdpvf.traction_, mapper),
+    pressure_(tdpvf.pressure_, mapper)
+{}
+
+
+tractionDisplacementFvPatchVectorFieldPressureProfile::
+tractionDisplacementFvPatchVectorFieldPressureProfile
+(
+    const fvPatch& p,
+    const DimensionedField<vector, volMesh>& iF,
+    const dictionary& dict
+)
+:
+    fixedGradientFvPatchVectorField(p, iF),
+    traction_("traction", dict, p.size()),	
+    pressure_("pressure", dict, p.size())
+{
+    fvPatchVectorField::operator=(patchInternalField());
+    gradient() = Zero;
+    //pressure_ = Function1<scalar>::New("pressure", dict);
+}
+
+
+tractionDisplacementFvPatchVectorFieldPressureProfile::
+tractionDisplacementFvPatchVectorFieldPressureProfile
+(
+    const tractionDisplacementFvPatchVectorFieldPressureProfile& tdpvf
+)
+:
+    fixedGradientFvPatchVectorField(tdpvf),
+    traction_(tdpvf.traction_),
+    pressure_(tdpvf.pressure_)
+{}
+
+
+tractionDisplacementFvPatchVectorFieldPressureProfile::
+tractionDisplacementFvPatchVectorFieldPressureProfile
+(
+    const tractionDisplacementFvPatchVectorFieldPressureProfile& tdpvf,
+    const DimensionedField<vector, volMesh>& iF
+)
+:
+    fixedGradientFvPatchVectorField(tdpvf, iF),
+    traction_(tdpvf.traction_),
+    pressure_(tdpvf.pressure_)
+{}
+
+
+// * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+void tractionDisplacementFvPatchVectorFieldPressureProfile::autoMap
+(
+    const fvPatchFieldMapper& m
+)
+{
+    fixedGradientFvPatchVectorField::autoMap(m);
+    traction_.autoMap(m);
+    pressure_.autoMap(m);
+}
+
+
+void tractionDisplacementFvPatchVectorFieldPressureProfile::rmap
+(
+    const fvPatchVectorField& ptf,
+    const labelList& addr
+)
+{
+    fixedGradientFvPatchVectorField::rmap(ptf, addr);
+
+    const tractionDisplacementFvPatchVectorFieldPressureProfile& dmptf =
+        refCast<const tractionDisplacementFvPatchVectorFieldPressureProfile>(ptf);
+
+    traction_.rmap(dmptf.traction_, addr);
+    pressure_.rmap(dmptf.pressure_, addr);
+}
+
+
+void tractionDisplacementFvPatchVectorFieldPressureProfile::updateCoeffs()
+{
+    if (updated())
+    {
+        return;
+    }
+
+    const dictionary& mechanicalProperties =
+        db().lookupObject<IOdictionary>("mechanicalProperties");
+
+    const dictionary& thermalProperties =
+        db().lookupObject<IOdictionary>("thermalProperties");
+
+
+    const fvPatchField<scalar>& rho =
+        patch().lookupPatchField<volScalarField, scalar>("rho");
+
+    const fvPatchField<scalar>& rhoE =
+        patch().lookupPatchField<volScalarField, scalar>("E");
+
+    const fvPatchField<scalar>& nu =
+        patch().lookupPatchField<volScalarField, scalar>("nu");
+
+    scalarField E(rhoE/rho);
+    scalarField mu(E/(2.0*(1.0 + nu)));
+    scalarField lambda(nu*E/((1.0 + nu)*(1.0 - 2.0*nu)));
+    scalarField threeK(E/(1.0 - 2.0*nu));
+
+    if (mechanicalProperties.get<bool>("planeStress"))
+    {
+        lambda = nu*E/((1.0 + nu)*(1.0 - nu));
+        threeK = E/(1.0 - nu);
+    }
+
+    scalarField twoMuLambda(2*mu + lambda);
+
+    vectorField n(patch().nf());
+
+    const fvPatchField<symmTensor>& sigmaD =
+        patch().lookupPatchField<volSymmTensorField, symmTensor>("sigmaD");
+
+    gradient() =
+    (
+        (traction_ - pressure_*n*1050)/rho
+      + twoMuLambda*fvPatchField<vector>::snGrad() - (n & sigmaD)
+    )/twoMuLambda;
+
+    if (thermalProperties.get<bool>("thermalStress"))
+    {
+        const fvPatchField<scalar>&  threeKalpha=
+            patch().lookupPatchField<volScalarField, scalar>("threeKalpha");
+
+        const fvPatchField<scalar>& T =
+            patch().lookupPatchField<volScalarField, scalar>("T");
+
+        gradient() += n*threeKalpha*T/twoMuLambda;
+    }
+
+    fixedGradientFvPatchVectorField::updateCoeffs();
+}
+
+
+void tractionDisplacementFvPatchVectorFieldPressureProfile::write(Ostream& os) const
+{
+    fvPatchVectorField::write(os);
+    traction_.writeEntry("traction", os);
+    pressure_.writeEntry("pressure", os);
+    writeEntry("value", os);
+}
+
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+makePatchTypeField
+(
+    fvPatchVectorField,
+    tractionDisplacementFvPatchVectorFieldPressureProfile
+);
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+} // End namespace Foam
+
+// ************************************************************************* //
